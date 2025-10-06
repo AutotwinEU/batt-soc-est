@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "autotwin_bselib"
+version = "0.0.0"
+description = "Battery SoC Estimation Library for Auto-Twin"
+license = "BSD-3-Clause"
+authors = [
+    "Yiqi Jia <yiqi.jia@polimi.it>"
+]
+readme = "README.md"
+homepage = "https://github.com/AutotwinEU/batt-soc-est"
+keywords = ["auto-twin", "battery model", "SoC estimation"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Manufacturing",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only"
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pandas = "^2.3.2"
+matplotlib = "^3.10.6"
+scipy = "^1.15.3"
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.2.0"
+flake8 = "^7.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

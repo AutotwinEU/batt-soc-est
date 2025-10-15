@@ -1,44 +1,32 @@
 # io_utils.py
+# -*- coding: utf-8 -*-
 import os, re, glob, shutil
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+from typing import Tuple, Optional, Iterable
 
-GUID2RACK = {
-    "0b822130-62a1-4a7e-8516-9d5802e2713e": 1,
-    "a10d3a06-681f-4646-b222-80c4ce9992e6": 2,
-    "c8b2f111-f075-4e89-bf6e-01db4bb94bc5": 3,
-    "4d4305fb-23f3-4967-b823-7563f13717e2": 4,
-    "b7ce837b-d7b5-4bfd-8316-f4665613dfb9": 5,
-    "2fb4ec59-aa24-4bfe-a70e-6fd40bb3ec26": 6,
-    "a70b1f2e-cfc0-4655-bb16-b5d02b85e012": 7,
-    "fbbe9145-4f19-4718-9ffc-70cd7f768c9c": 8,
-    "dd6427f6-7684-4544-aa4b-c632160918e7": 9,
-    "c81ab4a1-1835-4f06-8a2b-d423cd0ea66f": 10,
-    "873a9abf-647e-421e-a1b1-299f8eec094e": 11,
-    "4073fd3b-89b7-4d5a-b15e-c7e18843ffa1": 12,
-    "aeabe2b7-e23c-472a-8ef7-2c03f4a32b61": 13,
-    "855577f5-ec31-472b-bb1f-cbd876af2dec": 14
-}
-
+# 统一的变量名映射（容错）
 VARMAP = {
-    "current":"current",
-    "voltage":"voltage",
-    "soc":"soc",
-    "max_cell_voltage":"max_cell_voltage",
-    "min_cell_voltage":"min_cell_voltage",
-    "rack_current":"current",
-    "rack_voltage":"voltage",
-    "rack_soc":"soc",
-    "rack_max_cell_voltage":"max_cell_voltage",
-    "rack_min_cell_voltage":"min_cell_voltage",
+    "current": "current",
+    "voltage": "voltage",
+    "soc": "soc",
+    "max_cell_voltage": "max_cell_voltage",
+    "min_cell_voltage": "min_cell_voltage",
+    "rack_current": "current",
+    "rack_voltage": "voltage",
+    "rack_soc": "soc",
+    "rack_max_cell_voltage": "max_cell_voltage",
+    "rack_min_cell_voltage": "min_cell_voltage",
 }
 
-def _read_first_timestamp_ms(csv_path, header_lines=3):
-    # 兼容你数据的前三行头
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+TS14_RE = re.compile(r"(\d{14})")
+
+# ---------- 读取首时间戳（毫秒） ----------
+def _read_first_timestamp_ms(csv_path: str, header_lines: int = 3) -> int:
     df = pd.read_csv(csv_path, skiprows=header_lines)
-    # 第一列/Time 列
     col = "Time" if "Time" in df.columns else df.columns[0]
     t0 = df[col].iloc[0]
     # 直接数字（ms）
@@ -47,73 +35,82 @@ def _read_first_timestamp_ms(csv_path, header_lines=3):
         return int(t0)
     except Exception:
         pass
-    # 尝试解析时间字符串
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S.%f"):
+    # 解析常见时间字符串
+    fmts = ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S")
+    for fmt in fmts:
         try:
             dt = datetime.strptime(str(t0), fmt)
-            return int(dt.timestamp()*1000)
+            return int(dt.timestamp() * 1000)
         except Exception:
             continue
-    # 尝试作为 POSIX 秒
+    # 解析为 POSIX 秒
     try:
         dt = datetime.fromtimestamp(float(t0))
-        return int(dt.timestamp()*1000)
+        return int(dt.timestamp() * 1000)
     except Exception:
         raise ValueError(f"无法解析首行时间: {t0}")
 
-def rename_rack_files_with_time(folder, dry_run=False, data_header_lines=3, tolerance_ms=5):
-    """把 <GUID>_rack_<var>.csv 统改名为 Rack_XX_<var>_<yyyymmddHHMMss>.csv"""
+# ---------- 把 GUID 命名的三件套标准化为：{GUID}_rack_<var>_<yyyymmddHHMMSS>.csv ----------
+def rename_rack_files_with_time(folder: str, dry_run: bool = False, data_header_lines: int = 3, tolerance_ms: int = 5):
+    """
+    标准化命名：
+      - 目标：{GUID}_rack_current_<yyyymmddHHMMSS>.csv / voltage / soc
+      - 不再进行 GUID→数字 Rack_## 的映射
+      - 已经是目标格式的文件不动
+      - 旧的 Rack_##_* 格式也不动（保持兼容）
+    分组三件套并检查首时间戳一致性（±tolerance_ms）。
+    """
     folder = str(folder)
     files = glob.glob(os.path.join(folder, "*.csv"))
     if not files:
-        print(f'No CSV in "{folder}".'); 
+        print(f'No CSV in "{folder}".')
         return
 
-    # 找三元组分组
-    groups = {}  # guid -> {var: path}
-    pat = re.compile(r"([0-9a-f\-]{36}).*?_rack_([a-z_]+)\.csv$", re.I)
+    # 已标准化目标格式：<GUID>_rack_<var>_<TS>.csv
+    target_pat = re.compile(r"^[0-9a-f\-]{36}_rack_(current|voltage|soc)_\d{14}\.csv$", re.I)
+    # 可重命名的原始格式：<GUID>_rack_<var>.csv（无 TS）
+    raw_pat = re.compile(r"([0-9a-f\-]{36}).*?_rack_([a-z_]+)\.csv$", re.I)
+
+    # 分组：guid -> {var: path}
+    groups = {}
     for p in files:
         name = os.path.basename(p)
-        if re.match(r"^Rack_\d{2}_.+\.csv$", name):  # 已经标准化的跳过
+        if target_pat.match(name):
+            # 已是目标格式，跳过
             continue
-        m = pat.search(name)
-        if not m: 
+        m = raw_pat.search(name)
+        if not m:
+            # 留给旧 Rack_##_* 命名或其他文件，跳过
             continue
-        guid, var = m.group(1).lower(), m.group(2).lower()
-        var = VARMAP.get(var, var)
+        guid = m.group(1).lower()
+        var = VARMAP.get(m.group(2).lower(), m.group(2).lower())
         groups.setdefault(guid, {})[var] = p
 
-    required = {"current","voltage","soc"}
+    required = {"current", "voltage", "soc"}
     renamed, skipped = 0, 0
     for guid, mapping in groups.items():
         if not required.issubset(mapping.keys()):
-            skipped += len(mapping); 
+            skipped += len(mapping)
             continue
-        if guid not in GUID2RACK:
-            skipped += len(mapping); 
-            continue
-
         try:
             t0I = _read_first_timestamp_ms(mapping["current"], data_header_lines)
             t0V = _read_first_timestamp_ms(mapping["voltage"], data_header_lines)
-            t0S = _read_first_timestamp_ms(mapping["soc"],     data_header_lines)
+            t0S = _read_first_timestamp_ms(mapping["soc"], data_header_lines)
         except Exception:
-            skipped += len(mapping); 
+            skipped += len(mapping)
             continue
 
-        t0s = [t0I,t0V,t0S]
-        if max(t0s)-min(t0s) > tolerance_ms:
-            skipped += len(mapping); 
+        t0s = [t0I, t0V, t0S]
+        if max(t0s) - min(t0s) > tolerance_ms:
+            skipped += len(mapping)
             continue
+
         t0_ms = int(np.median(t0s))
-        dt = datetime.utcfromtimestamp(t0_ms/1000)
-        ts_str = dt.strftime("%Y%m%d%H%M%S")
+        ts_str = datetime.utcfromtimestamp(t0_ms / 1000).strftime("%Y%m%d%H%M%S")
 
-        rack_num = GUID2RACK[guid]
         for vname, old_path in mapping.items():
-            new_name = f"Rack_{rack_num:02d}_{vname}_{ts_str}.csv"
+            new_name = f"{guid}_rack_{vname}_{ts_str}.csv"
             new_path = os.path.join(folder, new_name)
-            # 避免覆盖
             i, base = 1, new_path
             while os.path.exists(new_path):
                 stem, ext = os.path.splitext(base)
@@ -128,66 +125,128 @@ def rename_rack_files_with_time(folder, dry_run=False, data_header_lines=3, tole
                     renamed += 1
                 except Exception:
                     skipped += 1
+
     print(f"[Rename] Done. Renamed: {renamed} | Skipped: {skipped}")
 
-def extract_ts(name):
-    m = re.search(r"_(\d{14})\.csv$", name)
+# ---------- 提取 14 位时间戳 ----------
+def extract_ts(name: str) -> Optional[str]:
+    m = TS14_RE.search(name)
     return m.group(1) if m else None
 
-def pick_triplet(folder, rack_id, ts_req=""):
-    folder = Path(folder)
-    cands_c = list(folder.glob(f"Rack_{rack_id}_current_*.csv"))
-    cands_v = list(folder.glob(f"Rack_{rack_id}_voltage_*.csv"))
-    cands_s = list(folder.glob(f"Rack_{rack_id}_soc_*.csv"))
-    if not (cands_c and cands_v and cands_s):
-        raise FileNotFoundError(f"Files not found for Rack_{rack_id} (current/voltage/soc).")
+# ---------- 查找三件套（兼容 ts_in / ts_req；优先 GUID 命名，其次 Rack_## 命名） ----------
+def pick_triplet(folder: str, rack_id: str, ts_in: str = "", ts_req: str = "") -> Tuple[str, str, str, str]:
+    """
+    优先假设 rack_id 是 GUID（UUID），查找：
+      {GUID}_rack_current_*.csv / _voltage_*.csv / _soc_*.csv
+    若找不到，兼容旧格式：
+      Rack_{rack_id}_current_*.csv / Rack_{rack_id}_voltage_*.csv / Rack_{rack_id}_soc_*.csv
 
-    def ts_set(files):
+    ts_in/ts_req（可二选一）指定 14 位时间戳；不指定则取三者时间戳交集的“最新一组”。
+    返回: (curFile, volFile, socFile, ts14)
+    """
+    folder = Path(folder)
+    rid = str(rack_id).strip()
+
+    def collect(prefix: str, cur_pat: str, vol_pat: str, soc_pat: str) -> Optional[Tuple[Iterable[Path], Iterable[Path], Iterable[Path]]]:
+        cands_c = list(folder.glob(cur_pat))
+        cands_v = list(folder.glob(vol_pat))
+        cands_s = list(folder.glob(soc_pat))
+        return (cands_c, cands_v, cands_s) if (cands_c and cands_v and cands_s) else None
+
+    # 模式 1：GUID 命名
+    have = collect(
+        rid,
+        f"{rid}_rack_current_*.csv",
+        f"{rid}_rack_voltage_*.csv",
+        f"{rid}_rack_soc_*.csv",
+    )
+
+    # 模式 2：旧 Rack_## 命名
+    if not have:
+        have = collect(
+            f"Rack_{rid}",
+            f"Rack_{rid}_current_*.csv",
+            f"Rack_{rid}_voltage_*.csv",
+            f"Rack_{rid}_soc_*.csv",
+        )
+        if not have:
+            raise FileNotFoundError(f"Files not found for '{rack_id}' (current/voltage/soc).")
+
+    cands_c, cands_v, cands_s = have
+
+    def ts_set(files: Iterable[Path]) -> set:
         return set(filter(None, (extract_ts(f.name) for f in files)))
 
-    if ts_req:
-        ts = ts_req
+    ts_want = ts_in or ts_req
+    if ts_want:
+        ts = ts_want
     else:
         common = ts_set(cands_c) & ts_set(cands_v) & ts_set(cands_s)
         if not common:
             raise RuntimeError("No common timestamp across trio.")
-        # 取最新
-        ts = max(common)
+        ts = max(common)  # 最新一组
 
-    cur = folder / f"Rack_{rack_id}_current_{ts}.csv"
-    vol = folder / f"Rack_{rack_id}_voltage_{ts}.csv"
-    soc = folder / f"Rack_{rack_id}_soc_{ts}.csv"
-    for p in (cur,vol,soc):
-        if not p.exists():
-            raise FileNotFoundError(f"Missing: {p}")
+    # 选定文件
+    def pick_one(files: Iterable[Path], key: str) -> Path:
+        for f in files:
+            if f.name.endswith(f"_{ts}.csv") and key in f.name:
+                return f
+        # 容错：匹配同 ts 的第一个
+        for f in files:
+            if f.name.endswith(f"_{ts}.csv"):
+                return f
+        raise FileNotFoundError(f"Missing {key} file for timestamp {ts}")
+
+    cur = pick_one(cands_c, "current")
+    vol = pick_one(cands_v, "voltage")
+    soc = pick_one(cands_s, "soc")
+
     return str(cur), str(vol), str(soc), ts
 
-def load_triplet(fI, fV, fS, header_lines=3):
+# ---------- 读取三件套 ----------
+def load_triplet(fI: str, fV: str, fS: str, header_lines: int = 3):
     TI = pd.read_csv(fI, skiprows=header_lines)
     TV = pd.read_csv(fV, skiprows=header_lines)
     TS = pd.read_csv(fS, skiprows=header_lines)
-    TI.columns = ["Time","Current"]
-    TV.columns = ["Time","Voltage"]
-    TS.columns = ["Time","soc"]
 
-    tI = TI["Time"].to_numpy(float)
-    tV = TV["Time"].to_numpy(float)
-    tS = TS["Time"].to_numpy(float)
+    # 统一列名（容错：若没有标准名，则取前两列/第一列）
+    def norm(df: pd.DataFrame, want: str):
+        cols = [c for c in df.columns]
+        # 时间列
+        tcol = "Time" if "Time" in cols else cols[0]
+        # 值列
+        if want == "current":
+            vcol = "Current" if "Current" in cols else (cols[1] if len(cols) > 1 else cols[0])
+        elif want == "voltage":
+            vcol = "Voltage" if "Voltage" in cols else (cols[1] if len(cols) > 1 else cols[0])
+        else:
+            vcol = "soc" if "soc" in cols else (cols[1] if len(cols) > 1 else cols[0])
+        out = pd.DataFrame({"Time": df[tcol], "Value": df[vcol]})
+        return out
+
+    TI = norm(TI, "current")
+    TV = norm(TV, "voltage")
+    TS = norm(TS, "soc")
+
+    tI = TI["Time"].to_numpy(dtype=float)
+    tV = TV["Time"].to_numpy(dtype=float)
+    tS = TS["Time"].to_numpy(dtype=float)
+
     if not (np.array_equal(tI, tV) and np.array_equal(tI, tS)):
         raise ValueError("Time vectors must match (current/voltage/soc).")
 
-    t_ms3 = np.stack([tI,tV,tS], axis=1)
-    I = TI["Current"].to_numpy(float)
-    V = TV["Voltage"].to_numpy(float)
-    S = TS["soc"].to_numpy(float)
+    t_ms3 = np.stack([tI, tV, tS], axis=1)
+    I = TI["Value"].to_numpy(dtype=float)
+    V = TV["Value"].to_numpy(dtype=float)
+    S = TS["Value"].to_numpy(dtype=float)
     return t_ms3, I, V, S
 
-def resample_60s(t_ms, I, V, SOCp, deltaT=60):
-    t0, t1 = t_ms[0], t_ms[-1]
-    grid_ms = np.arange(t0, t1+1e-9, deltaT*1000.0)
-    # 线性插值
+# ---------- 60s 重采样 ----------
+def resample_60s(t_ms: np.ndarray, I: np.ndarray, V: np.ndarray, SOCp: np.ndarray, deltaT: float = 60.0):
+    t0, t1 = float(t_ms[0]), float(t_ms[-1])
+    grid_ms = np.arange(t0, t1 + 1e-9, deltaT * 1000.0)
     Ig = np.interp(grid_ms, t_ms, I)
     Vg = np.interp(grid_ms, t_ms, V)
     Sg = np.interp(grid_ms, t_ms, SOCp)
-    t_grid = (grid_ms - grid_ms[0]) / 1000.0
+    t_grid = (grid_ms - grid_ms[0]) / 1000.0  # 秒
     return t_grid, Ig, Vg, Sg

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "autotwin_bselib"
-version = "0.0.0"
+version = "0.1.1"
 description = "Battery SoC Estimation Library for Auto-Twin"
 license = "BSD-3-Clause"
 authors = [
@@ -19,7 +19,7 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = "^3.10"
-neo4j = "5.17.0"
+neo4j = "^5.17.0"
 pandas = "^2.3.2"
 matplotlib = "^3.10.6"
 scipy = "^1.15.3"

@@ -379,6 +379,7 @@ def run_soc_period(
             return pack_out("fail", rack_code, req_axis_ms, -1.0, f"EKF failure: {repr(e)}")
 
         soc_fused  = out["soc_fused"]
+        v_ekf_seg  = np.asarray(out["v_ekf"], float)   # EKF  predicted voltage (V)
         user_soc_est = (soc_fused - SOC_min_real) / (SOC_max_real - SOC_min_real) * 100.0
         user_soc_est = np.clip(user_soc_est, 0.0, 100.0)
 
@@ -409,8 +410,8 @@ def run_soc_period(
 
                 fig2 = plt.figure(figsize=(7, 3))
                 ax2  = fig2.add_subplot(111)
-                ax2.plot(wall_times, V_seg, "-", lw=1.1, label="Measured V")
-                ax2.plot(wall_times, out["v_ekf"],  "-", lw=1.1, label="Pred V (EKF)")
+                ax2.plot(wall_times, V_seg,    "-", lw=1.1, label="Measured V")
+                ax2.plot(wall_times, v_ekf_seg, "-", lw=1.1, label="Pred V (EKF)")
                 ax2.set_ylabel("Voltage (V)"); ax2.grid(True); ax2.legend()
                 ax2.set_xlabel("Time"); fig2.autofmt_xdate()
 
@@ -439,6 +440,7 @@ def run_soc_period(
             "time_axis": [int(x) for x in axis_ms],
             "soc_estimated": [float(x) for x in user_soc_est],
             "bms_soc": [float(x) for x in bms_soc_pct],
+            "v_pred_ekf": [float(x) for x in v_ekf_seg],   # 新增：EKF 预测电压序列
             "metrics": {"mae_pct": mae, "rmse_pct": rmse, "r2": r2},
             "pe_params_used": pe_params_used,
             "pe_refit": bool(pe_refit),
@@ -447,6 +449,7 @@ def run_soc_period(
             "plots": plot_paths or None,
             "reason": None
         }
+
 
     finally:
         plt.show = _orig_show

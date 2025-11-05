@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "autotwin_bselib"
-version = "0.0.0"
+version = "0.1.2"
 description = "Battery SoC Estimation Library for Auto-Twin"
 license = "BSD-3-Clause"
 authors = [

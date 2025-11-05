@@ -4,5 +4,9 @@
 
 # Battery SoC Estimation Library for Auto-Twin
 
-A lumped-parameter Equivalent Circuit Model (ECM) is developed. It simulates battery performance under various working conditions and its parameters are continuously updating based on operational data. An algorithm is implemented using this model for the hybrid estimation of the battery's State of Charge (SOC).
+A lumped-parameter Equivalent Circuit Model (ECM) is developed. It simulates
+battery performance under various working conditions and its parameters are
+continuously updating based on operational data. An algorithm is implemented
+using this model for the hybrid estimation of the battery's State of Charge
+(SOC).
 

@@ -75,6 +75,27 @@ def pack_out(status: str, rack_code: str, time_axis_ms: List[int], soc_value: fl
 
 
 # ---------- Neo4j 读取 ----------
+neo4j_uri = "neo4j://localhost:7687" if os.getenv("NEO4J_URI") is None else os.getenv("NEO4J_URI")
+neo4j_username = "neo4j" if os.getenv("NEO4J_USERNAME") is None else os.getenv("NEO4J_USERNAME")
+neo4j_password = "12345678" if os.getenv("NEO4J_PASSWORD") is None else os.getenv("NEO4J_PASSWORD")
+neo4j_database = "neo4j" if os.getenv("NEO4J_DATABASE") is None else os.getenv("NEO4J_DATABASE")
+
+def get_rack_ids():
+    neo4j_auth = (neo4j_username, neo4j_password)
+    with neo4j.GraphDatabase.driver(neo4j_uri, auth=neo4j_auth).session(database=neo4j_database) as sess:
+        rows = sess.execute_read(read_rack_ids)
+    rack_ids = [row["rack_id"] for row in rows]
+    return rack_ids
+
+def read_rack_ids(tx: neo4j.ManagedTransaction):
+    return tx.run(
+        """
+        MATCH (ts:TimeSeries)
+        RETURN ts.rackId As rack_id
+        ORDER BY rack_id
+        """
+    ).data()
+
 def read_voltage_data(tx: neo4j.ManagedTransaction, rack_id: str, start_ms: int, end_ms: int):
     return tx.run(
         f"""
@@ -194,11 +215,7 @@ def run_soc_period(
     rack_id: str,
     start_ms: int = 0,
     end_ms: int = 0,
-    neo4j_uri: str = "neo4j://localhost:7687",
-    neo4j_username: str = "neo4j",
-    neo4j_password: str = "12345678",
-    neo4j_database: str = "neo4j",
-    model_dir: str = "model",
+    model_dir: str = "models",
     show_plots: bool = False,
     save_plots_dir: Optional[str] = None,
     ask_save_pe: bool = False,
@@ -458,33 +475,25 @@ def run_soc_period(
 # ========== CLI ==========
 def _cli():
     ap = argparse.ArgumentParser(description="SOC estimation (epoch-ms time, string rack_id via Neo4j)")
-    ap.add_argument("--rack", required=True)
+    ap.add_argument("--rack-id", required=True)
     ap.add_argument("--start-ms", type=int, required=True)
     ap.add_argument("--end-ms",   type=int, required=True)
-    ap.add_argument("--show",  action="store_true")
+    ap.add_argument("--model-dir", default="models")
+    ap.add_argument("--show-plots",  action="store_true")
     ap.add_argument("--save-plots-dir", default=None)
-    ap.add_argument("--model-dir", default="model")
     ap.add_argument("--ask-save-pe", action="store_true")
     ap.add_argument("--save-pe-path", default=None)
-    ap.add_argument("--neo4j-uri", default="neo4j://localhost:7687")
-    ap.add_argument("--neo4j-username", default="neo4j")
-    ap.add_argument("--neo4j-password", default="12345678")
-    ap.add_argument("--neo4j-database", default="neo4j")
     args = ap.parse_args()
 
     res = run_soc_period(
-        rack_id=args.rack,
+        rack_id=args.rack_id,
         start_ms=args.start_ms,
         end_ms=args.end_ms,
+        model_dir=args.model_dir,
         show_plots=args.show,
         save_plots_dir=args.save_plots_dir,
-        model_dir=args.model_dir,
         ask_save_pe=args.ask_save_pe,
         save_pe_path=args.save_pe_path,
-        neo4j_uri=args.neo4j_uri,
-        neo4j_username=args.neo4j_username,
-        neo4j_password=args.neo4j_password,
-        neo4j_database=args.neo4j_database,
     )
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
